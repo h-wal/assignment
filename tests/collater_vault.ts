@@ -11,7 +11,8 @@ import {
   TOKEN_2022_PROGRAM_ID,
   ASSOCIATED_TOKEN_PROGRAM_ID,
   createAssociatedTokenAccount,
-  mintTo
+  mintTo,
+  TokenError
 } from "@solana/spl-token";
 
 import { CollateralVault } from "../target/types/collateral_vault";
@@ -330,4 +331,67 @@ describe("Collateral_Vault", () => {
     );
 
   })
+
+  it("transfers collateral between vaults", async () => {
+
+    const [fromVaultPda] = PublicKey.findProgramAddressSync(
+      [Buffer.from("vault"), user.publicKey.toBuffer()],
+      program.programId
+    );
+
+    const secondUser = anchor.web3.Keypair.generate();
+
+    await provider.connection.confirmTransaction(
+      await provider.connection.requestAirdrop(
+        secondUser.publicKey,
+        2 * 1e9
+      ),
+      "confirmed"
+    )
+
+    const [toVaultPda, toVaultBump] = PublicKey.findProgramAddressSync(
+      [Buffer.from("vault"), secondUser.publicKey.toBuffer()],
+      program.programId
+    );
+
+    await program.methods.initializeVault(toVaultBump).accounts({
+      user: secondUser.publicKey,
+      mint: (await program.account.collateralVault.fetch(fromVaultPda)).mint,
+      vault: toVaultPda,
+      vaultTokenAccount: getAssociatedTokenAddressSync(
+        (await program.account.collateralVault.fetch(fromVaultPda)).mint,
+        toVaultPda,
+        true,
+        TOKEN_2022_PROGRAM_ID
+      ),
+      tokenProgram: TOKEN_2022_PROGRAM_ID,
+      systemProgram: SystemProgram.programId,
+      associatedTokenProgram: ASSOCIATED_TOKEN_PROGRAM_ID,
+      rent: anchor.web3.SYSVAR_RENT_PUBKEY,
+    }).signers([secondUser]).rpc();
+
+    const amount = 50_000;
+
+    const fromBefore = await program.account.collateralVault.fetch(fromVaultPda);
+    const toBefore = await program.account.collateralVault.fetch(toVaultPda);
+
+    await program.methods.transferCollateral(new anchor.BN(amount)).accounts({
+      callerProgram: program.programId,
+      fromVault: fromVaultPda,
+      toVault: toVaultPda,
+      vaultAuthority: vaultAuthorityPda
+    }).rpc();
+
+    const fromAfter = await program.account.collateralVault.fetch(fromVaultPda);
+    const toAfter = await program.account.collateralVault.fetch(toVaultPda);
+
+    expect(fromAfter.totalBalance.toNumber()).to.equal(
+      fromBefore.totalBalance.toNumber() - amount
+    );
+
+    expect(toAfter.totalBalance.toNumber()).to.equal(
+      toBefore.totalBalance.toNumber() + amount
+    );
+
+  });
 });
